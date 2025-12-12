@@ -1,116 +1,132 @@
 import pandas as pd
 import re
+import os
+import json
 from konlpy.tag import Okt
 from typing import List
 
 # 1. 형태소 분석기 초기화
-# 한국어 분석에 널리 사용되는 Okt(Open Korean Text) 사용 
-okt = Okt()
+okt = Okt() # [cite: 1]
 
 # 2. 불용어 리스트 정의
-# 프로젝트 특성에 맞게 이 리스트를 반드시 수정/추가하세요.
-KOREAN_STOP_WORDS = [
+# 프로젝트의 목적에 맞게 불용어(분석에서 제외할 단어)를 추가하거나 수정하세요.
+KOREAN_STOP_WORDS = [ # [cite: 2]
     '은', '는', '이', '가', '을', '를', '에', '와', '과', '도',
     '으로', '에게', '에서', '다', '의', '좀', '것', '수', '할', '고',
     '하다', '있다', '없다', '되다', '이다', '아니다', '보다', '해주다',
-    '말', '같다', '싶다', '우리', '네', '내', '저', '저희', '나', '입니다'
-] # [cite: 2]
+    '말', '같다', '싶다', '우리', '네', '내', '저', '저희', '나', '입니다',
+    # 뉴스 제목에서 자주 나오는 불필요한 단어 추가
+    '뉴스', '속보', '오늘', '연합', '기자', '단독', '종합', '금일', '해당', '관련'
+]
 
 def clean_text(text: str) -> str:
     """
-    텍스트에서 URL, 특수 문자, 숫자 등을 제거하는 함수입니다. 
+    텍스트에서 URL, 특수 문자, 숫자 등을 제거하여 정제합니다. 
     """
     if not isinstance(text, str):
-        return "" # 문자열이 아니면 빈 문자열 반환
+        return ""
 
     # 1. URL 제거
-    text = re.sub(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', '', text) [cite: 3]
+    text = re.sub(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', '', text) # 
 
-    # 2. HTML 태그 제거 (예: <br>, <a>)
-    text = re.sub('<[^>]*>', '', text) [cite: 3]
+    # 2. HTML 태그 및 이메일 주소 제거
+    text = re.sub('<[^>]*>', '', text) # 
+    text = re.sub(r'[a-zA-Z0-9+-_.]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', '', text) # 
 
-    # 3. 이메일 주소 제거
-    text = re.sub(r'[a-zA-Z0-9+-_.]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', '', text) [cite: 3]
+    # 3. 특수 문자/구두점/숫자 제거 (한글, 영어, 공백을 제외한 모든 문자 제거)
+    text = re.sub(r'[^가-힣A-Za-z\s]', '', text) # 
 
-    # 4. 특수 문자/구두점/숫자 제거 (한글, 영어, 공백을 제외한 모든 문자 제거)
-    text = re.sub(r'[^가-힣A-Za-z\s]', '', text) [cite: 3]
-
-    # 5. 여러 개의 공백을 하나로 줄임
-    text = re.sub(r'\s+', ' ', text).strip() [cite: 3]
+    # 4. 여러 개의 공백을 하나로 줄임
+    text = re.sub(r'\s+', ' ', text).strip() # 
 
     return text
 
 def tokenize_and_filter(text: str) -> List[str]:
     """
-    텍스트를 형태소 분석하여 명사만 추출하고 불용어를 제거하는 함수입니다. [cite: 4]
-    """ # [cite: 5]
+    텍스트를 형태소 분석하여 명사만 추출하고 불용어를 제거하는 함수입니다. [cite: 4, 5]
+    """
     # 텍스트를 형태소 단위로 분해하고 품사 태깅
-    tokens = okt.pos(text, norm=True, stem=True) [cite: 5]
+    tokens = okt.pos(text, norm=True, stem=True) # [cite: 5]
 
-    # 명사(Noun)만 추출하고 불용어 제거
+    # 명사(Noun)만 추출하고 불용어 및 한 글자 단어 제거
     final_words = [
         word for word, tag in tokens
-        if tag == 'Noun' and word not in KOREAN_STOP_WORDS and len(word) > 5
-    ] # Note: len(word) > 5 was not in original code, this line has been modified for illustrative purposes
+        if tag == 'Noun' and word not in KOREAN_STOP_WORDS and len(word) > 1
+    ] # [cite: 5]
 
     return final_words
 
-def preprocess_data(data_path: str, column_name: str) -> List[str]:
+def preprocess_data(directory_path: str) -> List[str]:
     """
-    데이터 파일을 읽고 전체 정제 과정을 수행하여 최종 명사 리스트를 반환합니다. [cite: 6]
+    지정된 디렉토리의 모든 JSON 파일을 읽고, 뉴스 제목을 추출하여 정제 및 토큰화합니다.
     """
-    # 1. 데이터 로드 (CSV 파일이라고 가정)
-    try:
-        df = pd.read_csv(data_path) [cite: 6]
-    except FileNotFoundError:
-        print(f"Error: File not found at {data_path}")
-        return []
-    except Exception as e:
-        print(f"Error loading data: {e}")
-        return []
-
-    # 2. 필요한 컬럼 추출 및 결측값 처리
-    texts = df[column_name].dropna().astype(str).tolist()
-
-    all_tokens = [] [cite: 7]
-    print(f"Total texts to process: {len(texts)}") [cite: 7]
+    all_tokens = []
     
-    # 3. 전체 텍스트에 대해 정제 및 토큰화 반복 적용
-    for i, text in enumerate(texts):
-        cleaned_text = clean_text(text) [cite: 7]
-        tokens = tokenize_and_filter(cleaned_text) [cite: 7]
-        all_tokens.extend(tokens) [cite: 7]
+    # 1. 디렉토리 내 JSON 파일 목록 가져오기
+    json_files = [f for f in os.listdir(directory_path) if f.endswith('.json')]
+    
+    if not json_files:
+        print(f"⚠️ {directory_path} 폴더에 JSON 파일이 없습니다. 수집 코드를 먼저 실행하세요.")
+        return []
+    
+    print(f"📰 총 {len(json_files)}개의 JSON 파일을 처리합니다.")
+
+    # 2. 파일별로 처리
+    for filename in json_files:
+        filepath = os.path.join(directory_path, filename)
         
-        if (i + 1) % 100 == 0:
-            print(f"Processed {i + 1} texts...") [cite: 8]
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                
+            # JSON 파일에서 'title' 키의 값들만 추출
+            titles = [item.get('title', '') for item in data]
             
-    print("Preprocessing complete.") [cite: 8]
+            total_titles = len(titles)
+            processed_count = 0
+            
+            print(f"   -> 파일 '{filename}': {total_titles}건 처리 시작")
+
+            # 3. 추출된 제목에 대해 정제 및 토큰화 적용
+            for text in titles:
+                cleaned_text = clean_text(text)
+                tokens = tokenize_and_filter(cleaned_text)
+                all_tokens.extend(tokens)
+                processed_count += 1
+            
+            print(f"   -> 파일 '{filename}': 처리 완료 ({processed_count}건)")
+
+        except FileNotFoundError:
+            print(f"Error: File not found at {filepath}")
+        except json.JSONDecodeError:
+            print(f"Error: JSON decoding failed for {filepath}")
+        except Exception as e:
+            print(f"Error processing {filepath}: {e}")
+
+    print("\n✅ 전체 데이터 정제 및 토큰화 완료.")
     return all_tokens
 
 # --- 실행 예시 ---
 if __name__ == "__main__":
-    # 이 부분을 팀의 데이터 경로와 컬럼 이름에 맞게 수정하세요!
-    data_file = 'your_raw_data.csv' 
-    text_column = 'review_content' 
     
-    # 더미 데이터 생성 (테스트용)
-    dummy_data = {
-        'review_content': [
-            '이 영화는 정말 재미있었습니다. 강력 추천합니다! http://example.com', # [cite: 9]
-            '와~ 배우들의 연기가 최고였어요!!! 근데 이건 너무 비싸다 12345', # [cite: 10]
-            '저희가 예상했던 것보다 좋았어요. 제가 또 보려고요. 이 영화, 정말 좋아.' # [cite: 11]
-        ]
-    }
-    dummy_df = pd.DataFrame(dummy_data)
-    dummy_df.to_csv(data_file, index=False, encoding='utf-8-sig')
+    # [설정] 팀원의 코드가 저장한 폴더 이름
+    DATA_DIRECTORY = 'collected_data' 
+    
+    # 데이터 정제 및 토큰화 실행
+    final_word_list = preprocess_data(DATA_DIRECTORY)
 
-    final_word_list = preprocess_data(data_file, text_column)
-
-    print("\n--- 최종 정제된 단어 목록 (일부) ---")
-    print(final_word_list[:20]) 
-    print(f"\n총 단어 개수: {len(final_word_list)}")
-
-    # 다음 단계(단어 빈도 계산)를 위해 결과를 파일로 저장할 수 있습니다.
-    with open('final_cleaned_words.txt', 'w', encoding='utf-8') as f:
-        f.write('\n'.join(final_word_list)) [cite: 12]
-    print("\n결과가 'final_cleaned_words.txt'로 저장되었습니다.") [cite: 12]
+    if final_word_list:
+        # 단어 목록을 파일로 저장하여 다음 단계(워드 클라우드)에서 사용
+        OUTPUT_FILENAME = 'final_tokenized_words.txt'
+        
+        # 워드 클라우드 생성을 위해 단어와 빈도를 카운트하는 추가 로직이 필요하지만, 
+        # 여기서는 일단 리스트를 저장합니다.
+        
+        with open(OUTPUT_FILENAME, 'w', encoding='utf-8') as f: # [cite: 12]
+            f.write('\n'.join(final_word_list))
+        
+        print("\n--- 처리 결과 요약 ---")
+        print(f"총 추출된 단어 개수: {len(final_word_list)}개")
+        print(f"결과가 '{OUTPUT_FILENAME}' 파일로 저장되었습니다.")
+    else:
+        print("최종 단어 목록이 비어있습니다. 수집 파일이 있는지 확인하세요.")
